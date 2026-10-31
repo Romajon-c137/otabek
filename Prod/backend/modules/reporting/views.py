@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from django.db.models import DecimalField, ExpressionWrapper, F, Q, Sum, Value
+from django.db.models import DecimalField, ExpressionWrapper, F, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -8,7 +8,7 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 
 from modules.documents.models import DocumentKind, DocumentStatus, TradeDocument, TradeLine
-from modules.finance.models import Obligation, ObligationSide, Payment
+from modules.finance.models import Obligation, ObligationSide, Payment, SettlementMovement
 from modules.identity.permissions import visible_warehouse_ids
 from modules.inventory.models import StockLevel, StockLot, StockMovement
 from modules.catalog.models import Product
@@ -130,10 +130,13 @@ class GrossProfitReportView(APIView):
 class SettlementReportView(APIView):
     @extend_schema(responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
-        rows = Obligation.objects.filter(warehouse_id__in=scoped_warehouses(request), open_amount__gt=0, reversed_at__isnull=True).values("party_id", "party__name").annotate(
+        warehouse_ids = scoped_warehouses(request)
+        latest_movement = SettlementMovement.objects.filter(party_id=OuterRef("party_id"), warehouse_id__in=warehouse_ids).order_by("-occurred_at", "-id").values("occurred_at")[:1]
+        rows = Obligation.objects.filter(warehouse_id__in=warehouse_ids, open_amount__gt=0, reversed_at__isnull=True).values("party_id", "party__name", "party__phone").annotate(
             receivable=Coalesce(Sum("open_amount", filter=Q(side=ObligationSide.RECEIVABLE)), Value(Decimal("0.00")), output_field=MONEY),
             payable=Coalesce(Sum("open_amount", filter=Q(side=ObligationSide.PAYABLE)), Value(Decimal("0.00")), output_field=MONEY),
+            last_operation=Subquery(latest_movement),
         ).order_by("party__name")
-        result = [{"party_id": row["party_id"], "party_name": row["party__name"], "receivable": row["receivable"], "payable": row["payable"], "balance": row["receivable"] - row["payable"]} for row in rows]
+        result = [{"party_id": row["party_id"], "party_name": row["party__name"], "party_phone": row["party__phone"], "receivable": row["receivable"], "payable": row["payable"], "balance": row["receivable"] - row["payable"], "last_operation": row["last_operation"]} for row in rows]
         return Response({"rows": result, "totals": {"receivable": sum((row["receivable"] for row in result), Decimal("0.00")), "payable": sum((row["payable"] for row in result), Decimal("0.00")), "balance": sum((row["balance"] for row in result), Decimal("0.00"))}})
 

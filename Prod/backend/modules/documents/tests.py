@@ -8,6 +8,7 @@ from modules.auditlog.models import AuditRecord
 from modules.catalog.models import Product
 from modules.common.errors import Conflict, InsufficientStock
 from modules.finance.models import Obligation, ObligationSide, Payment
+from modules.finance.services import create_obligation
 from modules.inventory.models import FifoAllocation, StockLevel, StockLot
 from modules.parties.models import Party
 from modules.warehouses.models import Warehouse
@@ -133,6 +134,32 @@ class DocumentWorkflowTests(TestCase):
             list(Payment.objects.filter(source_document=sale).order_by("id").values_list("method", "amount")),
             [(Payment.Method.CASH, Decimal("50.00")), (Payment.Method.MBANK, Decimal("70.00"))],
         )
+
+    def test_sale_payment_is_applied_before_offsetting_opposite_debt(self):
+        self.put_stock("3")
+        create_obligation(
+            party=self.party,
+            warehouse=self.warehouse,
+            side=ObligationSide.PAYABLE,
+            amount=Decimal("500.00"),
+            effective_date=date(2026, 10, 24),
+            actor=self.user,
+            reason="Мы должны человеку",
+        )
+        sale = self.document(DocumentKind.SALE, "2", "100", self.party)
+
+        post_document(
+            actor=self.user,
+            document=sale,
+            idempotency_key="sale-payment-before-offset",
+            payments=[{"method": Payment.Method.CASH, "amount": Decimal("75.00")}],
+        )
+
+        sale_debt = Obligation.objects.get(source_document=sale)
+        old_payable = Obligation.objects.get(side=ObligationSide.PAYABLE)
+        self.assertEqual(sale_debt.open_amount, Decimal("0.00"))
+        self.assertEqual(old_payable.open_amount, Decimal("375.00"))
+        self.assertEqual(Payment.objects.get(source_document=sale).amount, Decimal("75.00"))
 
     def test_customer_return_restores_original_fifo_cost_and_offsets_debt(self):
         self.put_stock("3", "60")

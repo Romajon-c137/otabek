@@ -48,12 +48,14 @@ class NeighborSupplySerializer(serializers.ModelSerializer):
 
 class TradeLineSerializer(serializers.ModelSerializer):
     product_id = serializers.IntegerField(source="product.id", read_only=True)
+    product_image = serializers.ImageField(source="product.image", read_only=True)
+    product_external_image_url = serializers.URLField(source="product.external_image_url", read_only=True)
     source_line_id = serializers.IntegerField(source="source_line.id", read_only=True, allow_null=True)
     neighbor_supply = NeighborSupplySerializer(read_only=True, allow_null=True)
 
     class Meta:
         model = TradeLine
-        fields = ["id", "position", "product_id", "source_line_id", "product_name", "unit", "quantity", "unit_price", "discount_amount", "line_total", "allocated_extra_cost", "neighbor_supply"]
+        fields = ["id", "position", "product_id", "product_image", "product_external_image_url", "source_line_id", "product_name", "unit", "quantity", "unit_price", "discount_amount", "line_total", "allocated_extra_cost", "neighbor_supply"]
 
 
 class ExtraCostSerializer(serializers.ModelSerializer):

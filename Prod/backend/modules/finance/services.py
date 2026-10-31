@@ -22,7 +22,7 @@ def _delta_for(side: str, amount: Decimal) -> tuple[Decimal, Decimal]:
     return (amount, ZERO) if side == ObligationSide.RECEIVABLE else (ZERO, amount)
 
 
-def create_obligation(*, party, warehouse, side: str, amount: Decimal, effective_date, actor, source_document=None, source_payment=None, product=None, original_quantity=None, unit_price=None, reason="") -> Obligation:
+def create_obligation(*, party, warehouse, side: str, amount: Decimal, effective_date, actor, due_date=None, source_document=None, source_payment=None, product=None, original_quantity=None, unit_price=None, reason="", apply_automatic_offset=True) -> Obligation:
     # Serialize new obligations for one counterparty. Without this lock two
     # opposite obligations created concurrently could both miss the other's
     # uncommitted row and skip their automatic offset.
@@ -34,6 +34,7 @@ def create_obligation(*, party, warehouse, side: str, amount: Decimal, effective
         original_amount=amount,
         open_amount=amount,
         effective_date=effective_date,
+        due_date=due_date,
         source_document=source_document,
         source_payment=source_payment,
         product=product,
@@ -44,7 +45,8 @@ def create_obligation(*, party, warehouse, side: str, amount: Decimal, effective
     )
     receivable, payable = _delta_for(side, amount)
     SettlementMovement.objects.create(party=party, warehouse=warehouse, event_type="obligation_created", receivable_delta=receivable, payable_delta=payable, obligation=obligation, document=source_document, description=reason)
-    auto_offset(party=party, warehouse=warehouse)
+    if apply_automatic_offset:
+        auto_offset(party=party, warehouse=warehouse)
     return obligation
 
 
@@ -143,13 +145,31 @@ def post_payment(*, actor, warehouse, party, direction: str, method: str, amount
 
 
 @transaction.atomic
-def create_manual_debt(*, actor, warehouse, party, side: str, amount: Decimal, effective_date, reason: str, idempotency_key: str) -> Obligation:
+def post_split_payment(*, actor, warehouse, party, direction: str, parts, effective_date, note: str, idempotency_key: str) -> list[Payment]:
+    payments = []
+    for part in parts:
+        payments.append(post_payment(
+            actor=actor,
+            warehouse=warehouse,
+            party=party,
+            direction=direction,
+            method=part["method"],
+            amount=part["amount"],
+            effective_date=effective_date,
+            note=note,
+            idempotency_key=f"{idempotency_key}:{part['method']}",
+        ))
+    return payments
+
+
+@transaction.atomic
+def create_manual_debt(*, actor, warehouse, party, side: str, amount: Decimal, effective_date, reason: str, idempotency_key: str, due_date=None) -> Obligation:
     require_warehouse(actor, warehouse, "can_manage_finance")
-    payload = {"warehouse": warehouse.pk, "party": party.pk, "side": side, "amount": amount, "effective_date": effective_date, "reason": reason}
+    payload = {"warehouse": warehouse.pk, "party": party.pk, "side": side, "amount": amount, "effective_date": effective_date, "due_date": due_date, "reason": reason}
     command = acquire_command(actor=actor, operation="manual_debt", key=idempotency_key, payload=payload)
     if command.replayed:
         return Obligation.objects.get(pk=command.receipt.result_id)
-    obligation = create_obligation(party=party, warehouse=warehouse, side=side, amount=amount, effective_date=effective_date, actor=actor, reason=reason)
+    obligation = create_obligation(party=party, warehouse=warehouse, side=side, amount=amount, effective_date=effective_date, due_date=due_date, actor=actor, reason=reason)
     record_action(actor=actor, action="obligation.manual_created", entity=obligation, warehouse_id=warehouse.pk, after=payload)
     complete_command(command.receipt, result_kind="finance.obligation", result_id=obligation.pk)
     return obligation

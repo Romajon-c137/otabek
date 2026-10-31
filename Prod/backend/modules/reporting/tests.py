@@ -16,7 +16,7 @@ class ReportTests(TestCase):
         self.user = get_user_model().objects.create_superuser("report", "report@example.test", "correct-horse-123")
         self.warehouse = Warehouse.objects.create(code="R", name="Отчётный")
         self.product = Product.objects.create(name="Товар", sku="R-1", purchase_price="10", retail_price="20")
-        self.party = Party.objects.create(code="RC", name="Покупатель", kind=Party.Kind.CUSTOMER)
+        self.party = Party.objects.create(code="RC", name="Покупатель", kind=Party.Kind.CUSTOMER, phone="+996555000111")
         self.client = APIClient()
         self.client.force_authenticate(self.user)
         opening = create_document(actor=self.user, warehouse=self.warehouse, kind=DocumentKind.OPENING, effective_date=date(2026, 10, 25), lines=[{"product": self.product, "quantity": "10", "unit_price": "10"}])
@@ -33,5 +33,7 @@ class ReportTests(TestCase):
         self.assertEqual(stock["totals"]["inventory_value"], 80)
         self.assertEqual(sales["totals"]["revenue"], 40)
         self.assertEqual(debts["totals"]["receivable"], 40)
+        self.assertEqual(debts["rows"][0]["party_phone"], "+996555000111")
+        self.assertIsNotNone(debts["rows"][0]["last_operation"])
         self.assertEqual(profit["totals"]["gross_profit"], 20)
 

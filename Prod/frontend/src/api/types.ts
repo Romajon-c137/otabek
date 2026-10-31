@@ -70,6 +70,8 @@ export interface TradeLine {
   id: Id;
   position: number;
   product_id: Id;
+  product_image: string | null;
+  product_external_image_url: string;
   source_line_id: Id | null;
   product_name: string;
   unit: string;
@@ -104,6 +106,7 @@ export interface TradeDocument {
   document_discount_amount: string;
   version: number;
   source_document: Id | null;
+  cancellation_reason?: string;
   lines: TradeLine[];
   extra_costs: { id: Id; name: string; amount: string }[];
 }
@@ -117,8 +120,11 @@ export interface Obligation {
   original_amount: string;
   open_amount: string;
   effective_date: string;
+  due_date: string | null;
   reason: string;
   source_number: string | null;
+  source_document: Id | null;
+  reversed_at: string | null;
   product: Id | null;
   original_quantity: string | null;
   unit_price: string | null;
@@ -136,5 +142,6 @@ export interface Payment {
   amount: string;
   effective_date: string;
   note: string;
+  source_document: Id | null;
 }
 

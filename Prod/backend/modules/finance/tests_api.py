@@ -15,11 +15,21 @@ class FinanceApiTests(TestCase):
         self.party = Party.objects.create(code="M-C", name="Должник", kind=Party.Kind.CUSTOMER)
 
     def test_manual_debt_and_partial_payment_api(self):
-        debt = self.client.post("/api/v1/finance/obligations/", {"warehouse_id": self.warehouse.pk, "party_id": self.party.pk, "side": "receivable", "amount": "125.50", "effective_date": "2026-10-25", "reason": "Перенос долга"}, format="json", HTTP_IDEMPOTENCY_KEY="api-debt")
+        debt = self.client.post("/api/v1/finance/obligations/", {"warehouse_id": self.warehouse.pk, "party_id": self.party.pk, "side": "receivable", "amount": "125.50", "effective_date": "2026-10-25", "due_date": "2026-11-25", "reason": "Перенос долга"}, format="json", HTTP_IDEMPOTENCY_KEY="api-debt")
         self.assertEqual(debt.status_code, 201, debt.data)
+        self.assertEqual(debt.data["due_date"], "2026-11-25")
         payment = self.client.post("/api/v1/finance/payments/", {"warehouse_id": self.warehouse.pk, "party_id": self.party.pk, "direction": "incoming", "method": "cash", "amount": "25.50", "effective_date": "2026-10-25", "note": "Частично"}, format="json", HTTP_IDEMPOTENCY_KEY="api-payment")
         self.assertEqual(payment.status_code, 201, payment.data)
         open_items = self.client.get(f"/api/v1/finance/obligations/?party={self.party.pk}&open=true")
         self.assertEqual(open_items.status_code, 200)
         self.assertEqual(open_items.data["results"][0]["open_amount"], "100.00")
+
+    def test_split_payment_is_posted_as_one_request(self):
+        debt = self.client.post("/api/v1/finance/obligations/", {"warehouse_id": self.warehouse.pk, "party_id": self.party.pk, "side": "receivable", "amount": "100.00", "effective_date": "2026-10-25", "reason": "Продажа"}, format="json", HTTP_IDEMPOTENCY_KEY="split-debt")
+        self.assertEqual(debt.status_code, 201, debt.data)
+        payment = self.client.post("/api/v1/finance/payments/split/", {"warehouse_id": self.warehouse.pk, "party_id": self.party.pk, "direction": "incoming", "effective_date": "2026-10-25", "parts": [{"method": "cash", "amount": "40.00"}, {"method": "mbank", "amount": "60.00"}]}, format="json", HTTP_IDEMPOTENCY_KEY="split-payment")
+        self.assertEqual(payment.status_code, 201, payment.data)
+        self.assertEqual(len(payment.data), 2)
+        open_items = self.client.get(f"/api/v1/finance/obligations/?party={self.party.pk}&open=true")
+        self.assertEqual(open_items.data["count"], 0)
 

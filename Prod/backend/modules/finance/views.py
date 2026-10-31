@@ -9,8 +9,8 @@ from modules.identity.permissions import visible_warehouse_ids
 from modules.parties.models import Party
 from modules.warehouses.models import Warehouse
 from .models import Obligation, ObligationSide, Payment, SettlementMovement
-from .serializers import ManualDebtCreateSerializer, ObligationSerializer, PaymentCreateSerializer, PaymentSerializer, SettlementMovementSerializer, VoidPaymentSerializer
-from .services import create_manual_debt, post_payment, void_payment
+from .serializers import ManualDebtCreateSerializer, ObligationSerializer, PaymentCreateSerializer, PaymentSerializer, SettlementMovementSerializer, SplitPaymentCreateSerializer, VoidPaymentSerializer
+from .services import create_manual_debt, post_payment, post_split_payment, void_payment
 
 
 class ObligationViewSet(viewsets.ReadOnlyModelViewSet):
@@ -21,7 +21,7 @@ class ObligationViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = Obligation.objects.select_related("party", "warehouse", "source_document").filter(warehouse_id__in=visible_warehouse_ids(self.request.user))
         if self.request.query_params.get("open") == "true":
             queryset = queryset.filter(open_amount__gt=0, reversed_at__isnull=True)
-        for param in ("party", "warehouse", "side"):
+        for param in ("party", "warehouse", "side", "source_document"):
             value = self.request.query_params.get(param)
             if value:
                 queryset = queryset.filter(**{param if param == "side" else f"{param}_id": value})
@@ -31,7 +31,7 @@ class ObligationViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = ManualDebtCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        obligation = create_manual_debt(actor=request.user, warehouse=get_object_or_404(Warehouse, pk=data["warehouse_id"]), party=get_object_or_404(Party, pk=data["party_id"]), side=data["side"], amount=data["amount"], effective_date=data["effective_date"], reason=data["reason"], idempotency_key=request.headers.get("Idempotency-Key", ""))
+        obligation = create_manual_debt(actor=request.user, warehouse=get_object_or_404(Warehouse, pk=data["warehouse_id"]), party=get_object_or_404(Party, pk=data["party_id"]), side=data["side"], amount=data["amount"], effective_date=data["effective_date"], due_date=data.get("due_date"), reason=data["reason"], idempotency_key=request.headers.get("Idempotency-Key", ""))
         return Response(self.get_serializer(obligation).data, status=status.HTTP_201_CREATED)
 
 
@@ -41,7 +41,7 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = Payment.objects.select_related("party", "warehouse").filter(warehouse_id__in=visible_warehouse_ids(self.request.user))
-        for param in ("party", "warehouse", "direction", "status"):
+        for param in ("party", "warehouse", "direction", "status", "source_document"):
             value = self.request.query_params.get(param)
             if value:
                 queryset = queryset.filter(**{param if param in {"direction", "status"} else f"{param}_id": value})
@@ -53,6 +53,14 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
         data = serializer.validated_data
         payment = post_payment(actor=request.user, warehouse=get_object_or_404(Warehouse, pk=data["warehouse_id"]), party=get_object_or_404(Party, pk=data["party_id"]), direction=data["direction"], method=data["method"], amount=data["amount"], effective_date=data["effective_date"], note=data.get("note", ""), idempotency_key=request.headers.get("Idempotency-Key", ""), applications=data.get("applications", []))
         return Response(self.get_serializer(payment).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"])
+    def split(self, request):
+        serializer = SplitPaymentCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        payments = post_split_payment(actor=request.user, warehouse=get_object_or_404(Warehouse, pk=data["warehouse_id"]), party=get_object_or_404(Party, pk=data["party_id"]), direction=data["direction"], parts=data["parts"], effective_date=data["effective_date"], note=data.get("note", ""), idempotency_key=request.headers.get("Idempotency-Key", ""))
+        return Response(self.get_serializer(payments, many=True).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):

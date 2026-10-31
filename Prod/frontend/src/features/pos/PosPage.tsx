@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Check, ClipboardList, Maximize2, Minus, Pencil, Plus, Search, ShoppingCart, UserRound, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, apiAll, ApiError, idempotencyHeaders } from '../../api/client';
 import type { Party, Product, TradeDocument } from '../../api/types';
 import { useWarehouse } from '../../app/WarehouseContext';
@@ -24,11 +24,14 @@ export function PosPage({ flow = 'sale' }: { flow?: 'sale' | 'order' }) {
   const { warehouseId } = useWarehouse();
   const cache = useQueryClient();
   const navigate = useNavigate();
+  const { id } = useParams();
   const isOrder = flow === 'order';
+  const editingOrderId = isOrder && Number.isInteger(Number(id)) && Number(id) > 0 ? Number(id) : null;
+  const hydratedOrderId = useRef<number | null>(null);
   const [mode, setMode] = useState<PriceMode>('retail');
   const [search, setSearch] = useState('');
   const [party, setParty] = useState<Party | null>(null);
-  const [partyOpen, setPartyOpen] = useState(isOrder);
+  const [partyOpen, setPartyOpen] = useState(isOrder && !editingOrderId);
   const [activeGroup, setActiveGroup] = useState<ProductGroup | null>(null);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [orderOpen, setOrderOpen] = useState(false);
@@ -37,6 +40,7 @@ export function PosPage({ flow = 'sale' }: { flow?: 'sale' | 'order' }) {
 
   const products = useQuery({ queryKey: ['pos-products'], queryFn: () => apiAll<Product>('/catalog/products/?active=true') });
   const people = useQuery({ queryKey: ['pos-people'], queryFn: () => apiAll<Party>('/parties/?is_active=true') });
+  const editingOrder = useQuery({ queryKey: ['editing-order', editingOrderId], queryFn: () => api<TradeDocument>(`/documents/${editingOrderId}/`), enabled: Boolean(editingOrderId) });
   const selectablePeople = (people.data ?? []).filter((person) =>
     !person.is_system
     && !person.system_key
@@ -65,6 +69,28 @@ export function PosPage({ flow = 'sale' }: { flow?: 'sale' | 'order' }) {
     for (const line of lines) result.set(line.product.name, [...(result.get(line.product.name) ?? []), line]);
     return [...result.entries()];
   })();
+
+  useEffect(() => {
+    const document = editingOrder.data;
+    if (!editingOrderId || !document || !products.data || !people.data || hydratedOrderId.current === editingOrderId) return;
+    if (document.kind !== 'customer_order' || document.status !== 'draft') return;
+    const productMap = new Map(products.data.map((product) => [product.id, product]));
+    const peopleMap = new Map(people.data.map((person) => [person.id, person]));
+    setParty(document.party ? peopleMap.get(document.party) ?? null : null);
+    setCart(Object.fromEntries(document.lines.flatMap((line) => {
+      const product = productMap.get(line.product_id);
+      if (!product) return [];
+      const supplier = line.neighbor_supply ? peopleMap.get(line.neighbor_supply.supplier_id) : null;
+      return [[line.product_id, {
+        product,
+        quantity: Number(line.quantity),
+        unitPrice: Number(line.unit_price),
+        discountAmount: Number(line.discount_amount),
+        ...(line.neighbor_supply && supplier ? { neighborSupply: { supplier, quantity: Number(line.neighbor_supply.quantity), unitPrice: Number(line.neighbor_supply.unit_price) } } : {}),
+      } satisfies CartLine]];
+    })));
+    hydratedOrderId.current = editingOrderId;
+  }, [editingOrder.data, editingOrderId, people.data, products.data]);
 
   const sale = useMutation({
     mutationFn: async (amounts: PaymentAmounts) => {
@@ -111,11 +137,13 @@ export function PosPage({ flow = 'sale' }: { flow?: 'sale' | 'order' }) {
     mutationFn: async (note: string) => {
       if (!warehouseId || !lines.length) throw new Error('Заказ пуст.');
       if (!party) throw new Error('Для заказа обязательно выберите человека.');
-      return api<TradeDocument>('/documents/', {
-        method: 'POST',
+      const existing = editingOrder.data;
+      return api<TradeDocument>(existing ? `/documents/${existing.id}/` : '/documents/', {
+        method: existing ? 'PUT' : 'POST',
         body: JSON.stringify({
           kind: 'customer_order', warehouse_id: warehouseId, party_id: party.id,
-          effective_date: new Date().toISOString().slice(0, 10), note, document_discount_amount: '0.00', extra_costs: [],
+          effective_date: existing?.effective_date ?? new Date().toISOString().slice(0, 10), note, document_discount_amount: existing?.document_discount_amount ?? '0.00', extra_costs: [],
+          ...(existing ? { version: existing.version } : {}),
           lines: lines.map((line) => ({
             product_id: line.product.id,
             quantity: String(line.quantity),
@@ -137,8 +165,9 @@ export function PosPage({ flow = 'sale' }: { flow?: 'sale' | 'order' }) {
     },
   });
 
-  if (products.isLoading) return <Loading />;
-  if (products.error || !products.data) return <ErrorState error={products.error} retry={() => void products.refetch()} />;
+  if (products.isLoading || (editingOrderId && editingOrder.isLoading)) return <Loading />;
+  if (products.error || !products.data || editingOrder.error) return <ErrorState error={products.error ?? editingOrder.error} retry={() => { void products.refetch(); void editingOrder.refetch(); }} />;
+  if (editingOrderId && editingOrder.data && (editingOrder.data.kind !== 'customer_order' || editingOrder.data.status !== 'draft')) return <ErrorState error={new Error('Изменять можно только черновик заказа.')} />;
 
   function applyVariants(group: ProductGroup, values: Record<number, VariantDraft>) {
     setCart((current) => {
@@ -155,7 +184,7 @@ export function PosPage({ flow = 'sale' }: { flow?: 'sale' | 'order' }) {
 
   return <section className="pos-page">
     <header className="pos-titlebar">
-      <div><Link className="button secondary compact" to={isOrder ? '/orders' : '/'}><ArrowLeft size={15} />{isOrder ? 'Заказы' : 'Касса'}</Link><h1>{isOrder ? <ClipboardList size={24} /> : <ShoppingCart size={24} />}{isOrder ? 'Новый заказ' : 'Продажа'}</h1></div>
+      <div><Link className="button secondary compact" to={isOrder ? '/orders' : '/'}><ArrowLeft size={15} />{isOrder ? 'Заказы' : 'Касса'}</Link><h1>{isOrder ? <ClipboardList size={24} /> : <ShoppingCart size={24} />}{isOrder ? (editingOrderId ? 'Изменение заказа' : 'Новый заказ') : 'Продажа'}</h1></div>
       <div className="price-switch"><button className={mode === 'retail' ? 'active' : ''} onClick={() => setMode('retail')}>Розница</button><button className={mode === 'wholesale' ? 'active' : ''} onClick={() => setMode('wholesale')}>Оптом</button></div>
     </header>
     {notice && <div className="pos-notice"><Check size={17} />{notice}<button onClick={() => setNotice('')} aria-label="Закрыть"><X size={15} /></button></div>}
@@ -180,13 +209,13 @@ export function PosPage({ flow = 'sale' }: { flow?: 'sale' | 'order' }) {
           <div className="cart-group-title"><strong>{name}</strong><button onClick={() => setActiveGroup(groups.find((item) => item.name === name) ?? null)} aria-label={`Изменить ${name}`}><Pencil size={15} /></button><button onClick={() => setCart((current) => { const next = { ...current }; groupLines.forEach((line) => delete next[line.product.id]); return next; })} aria-label={`Удалить ${name}`}><X size={14} /></button></div>
           {groupLines.map((line) => <div className="cart-row" key={line.product.id}><span>{line.product.variant_name || line.product.sku || 'Без размера'}{line.neighborSupply && <small>От соседа: {line.neighborSupply.quantity} шт</small>}</span><span>{line.quantity} {unitLabel(line.product.unit)}</span><strong>{money.format(lineTotal(line))}</strong></div>)}
         </article>)}</div>
-        <footer><div><span>Итого:</span><strong>{money.format(total)} сом</strong></div><button className="accept-payment" disabled={!lines.length || (isOrder && !party)} onClick={() => isOrder ? setOrderOpen(true) : setPaymentOpen(true)}><Check size={19} />{isOrder ? 'Сохранить заказ' : 'Принять оплату'}</button></footer>
+        <footer><div><span>Итого:</span><strong>{money.format(total)} сом</strong></div><button className="accept-payment" disabled={!lines.length || (isOrder && !party)} onClick={() => isOrder ? setOrderOpen(true) : setPaymentOpen(true)}><Check size={19} />{isOrder ? (editingOrderId ? 'Сохранить изменения' : 'Сохранить заказ') : 'Принять оплату'}</button></footer>
       </aside>
     </div>
     {activeGroup && <VariantDialog group={activeGroup} mode={mode} cart={cart} people={selectablePeople} onClose={() => setActiveGroup(null)} onApply={(values) => applyVariants(activeGroup, values)} />}
     {partyOpen && <PartyDialog parties={selectablePeople} selected={party} allowNone={!isOrder} title="Выбрать человека" onSelect={(value) => { setParty(value); setPartyOpen(false); }} onClose={() => setPartyOpen(false)} />}
     {!isOrder && paymentOpen && <PaymentDialog total={total} canDebt={Boolean(party)} pending={sale.isPending} error={sale.error} onPay={(value) => sale.mutate(value)} onClose={() => { if (!sale.isPending) setPaymentOpen(false); }} />}
-    {isOrder && orderOpen && party && <OrderDialog party={party} total={total} pending={order.isPending} error={order.error} onSave={(note) => order.mutate(note)} onClose={() => { if (!order.isPending) setOrderOpen(false); }} />}
+    {isOrder && orderOpen && party && <OrderDialog party={party} total={total} initialNote={editingOrder.data?.note ?? ''} editing={Boolean(editingOrderId)} pending={order.isPending} error={order.error} onSave={(note) => order.mutate(note)} onClose={() => { if (!order.isPending) setOrderOpen(false); }} />}
   </section>;
 }
 
@@ -286,14 +315,15 @@ function PartyDialog({ parties, selected, allowNone, title, onSelect, onClose }:
   return <Modal title={title} onClose={onClose}><label className="catalog-search"><Search size={18} /><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Имя или телефон" /></label><div className="party-picker">{allowNone && <button className={!selected ? 'active' : ''} onClick={() => onSelect(null)}><strong>Розничный покупатель</strong><span>Без персонального долга</span></button>}{shown.map((party) => <button className={selected?.id === party.id ? 'active' : ''} key={party.id} onClick={() => onSelect(party)}><strong>{party.name}</strong><span>{party.phone || party.code}</span></button>)}</div></Modal>;
 }
 
-function OrderDialog({ party, total, pending, error, onSave, onClose }: { party: Party; total: number; pending: boolean; error: unknown; onSave(note: string): void; onClose(): void }) {
-  const [note, setNote] = useState('');
-  return <Modal title="Сохранить заказ" onClose={onClose}><div className="payment-dialog"><span>Человек</span><strong>{party.name}</strong><span>Сумма заказа</span><strong className="payment-total">{money.format(total)} <small>сом</small></strong><label>Комментарий<textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Срок, доставка, пожелания" /></label>{Boolean(error) && <div className="form-error">{validationMessage(error) ?? (error instanceof ApiError ? error.message : String(error))}</div>}<footer><button className="button secondary" onClick={onClose} disabled={pending}>Назад</button><button className="button primary" onClick={() => onSave(note)} disabled={pending}>{pending ? 'Сохраняем…' : 'Сохранить заказ'}</button></footer></div></Modal>;
+function OrderDialog({ party, total, initialNote, editing, pending, error, onSave, onClose }: { party: Party; total: number; initialNote: string; editing: boolean; pending: boolean; error: unknown; onSave(note: string): void; onClose(): void }) {
+  const [note, setNote] = useState(initialNote);
+  return <Modal title={editing ? 'Сохранить изменения' : 'Сохранить заказ'} onClose={onClose}><div className="payment-dialog"><span>Человек</span><strong>{party.name}</strong><span>Сумма заказа</span><strong className="payment-total">{money.format(total)} <small>сом</small></strong><label>Комментарий<textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Срок, доставка, пожелания" /></label>{Boolean(error) && <div className="form-error">{validationMessage(error) ?? (error instanceof ApiError ? error.message : String(error))}</div>}<footer><button className="button secondary" onClick={onClose} disabled={pending}>Назад</button><button className="button primary" onClick={() => onSave(note)} disabled={pending}>{pending ? 'Сохраняем…' : editing ? 'Сохранить изменения' : 'Сохранить заказ'}</button></footer></div></Modal>;
 }
 
 function PaymentDialog({ total, canDebt, pending, error, onPay, onClose }: { total: number; canDebt: boolean; pending: boolean; error: unknown; onPay(amounts: PaymentAmounts): void; onClose(): void }) {
   const [cash, setCash] = useState('');
   const [mbank, setMbank] = useState('');
+  const [autoFill, setAutoFill] = useState(false);
   const cashValue = Number(cash || 0);
   const mbankValue = Number(mbank || 0);
   const paid = Math.round((cashValue + mbankValue) * 100) / 100;
@@ -302,7 +332,35 @@ function PaymentDialog({ total, canDebt, pending, error, onPay, onClose }: { tot
   const overpaid = paid > total + 0.001;
   const underpaidRetail = paid < total - 0.001 && !canDebt;
   const disabled = pending || invalidNumbers || overpaid || underpaidRetail;
-  return <Modal title="Оплата" onClose={onClose}><div className="payment-dialog"><span>К оплате</span><strong className="payment-total">{money.format(total)} <small>сом</small></strong><div className="payment-fields"><label>Наличные<div className="payment-input"><input autoFocus type="number" min="0" step="0.01" value={cash} onChange={(event) => setCash(event.target.value)} placeholder="0" /><span>сом</span></div></label><label>МБанк<div className="payment-input"><input type="number" min="0" step="0.01" value={mbank} onChange={(event) => setMbank(event.target.value)} placeholder="0" /><span>сом</span></div></label></div><div className="payment-summary"><span>Оплачено <strong>{money.format(paid)} сом</strong></span><span>Остаток <strong>{money.format(remainder)} сом</strong></span></div>{overpaid && <div className="form-error">Оплата больше итога чека на {money.format(paid - total)} сом.</div>}{underpaidRetail && <div className="form-error">Для розничного покупателя нужна полная оплата. Не хватает {money.format(remainder)} сом.</div>}{canDebt && remainder > 0 && !overpaid && <div className="debt-message">Остаток {money.format(remainder)} сом будет записан выбранному человеку в долг.</div>}{Boolean(error) && <div className="form-error">{validationMessage(error) ?? (error instanceof ApiError ? error.message : String(error))}</div>}<footer><button className="button secondary" onClick={onClose} disabled={pending}>Назад</button><button className="button primary" onClick={() => onPay({ cash, mbank })} disabled={disabled}>{pending ? 'Проводим…' : 'Завершить'}</button></footer></div></Modal>;
+  const fillPayment = (method: 'cash' | 'mbank') => {
+    const fullAmount = String(total);
+    setCash(method === 'cash' ? fullAmount : '');
+    setMbank(method === 'mbank' ? fullAmount : '');
+  };
+  const complementaryAmount = (value: string) => {
+    const amount = Number(value);
+    if (value === '' || !Number.isFinite(amount) || amount < 0) return '';
+    return String(Math.max(0, Math.round((total - amount) * 100) / 100));
+  };
+  const changeAmount = (method: 'cash' | 'mbank', value: string) => {
+    if (method === 'cash') {
+      setCash(value);
+      if (autoFill) setMbank(complementaryAmount(value));
+    } else {
+      setMbank(value);
+      if (autoFill) setCash(complementaryAmount(value));
+    }
+  };
+  const changeAutoFill = (checked: boolean) => {
+    setAutoFill(checked);
+    if (!checked) return;
+    if (cash !== '') setMbank(complementaryAmount(cash));
+    else if (mbank !== '') setCash(complementaryAmount(mbank));
+  };
+  const selectedMethod = Math.abs(paid - total) < 0.001
+    ? cashValue > 0 && mbankValue === 0 ? 'cash' : mbankValue > 0 && cashValue === 0 ? 'mbank' : null
+    : null;
+  return <Modal title="Оплата" onClose={onClose}><div className="payment-dialog"><span>К оплате</span><strong className="payment-total">{money.format(total)} <small>сом</small></strong><div className="payment-fields-block"><label className="payment-auto"><input type="checkbox" checked={autoFill} onChange={(event) => changeAutoFill(event.target.checked)} /><span>Авто</span></label><div className="payment-fields"><label>Наличные<div className="payment-input"><input autoFocus type="number" min="0" step="0.01" value={cash} onChange={(event) => changeAmount('cash', event.target.value)} placeholder="0" /><span>сом</span></div></label><label>МБанк<div className="payment-input"><input type="number" min="0" step="0.01" value={mbank} onChange={(event) => changeAmount('mbank', event.target.value)} placeholder="0" /><span>сом</span></div></label></div></div><div className="payment-methods" aria-label="Заполнить всю сумму"><button type="button" className={selectedMethod === 'cash' ? 'active' : ''} aria-pressed={selectedMethod === 'cash'} onClick={() => fillPayment('cash')}>Наличные</button><button type="button" className={selectedMethod === 'mbank' ? 'active' : ''} aria-pressed={selectedMethod === 'mbank'} onClick={() => fillPayment('mbank')}>МБанк</button></div>{overpaid && <div className="form-error">Оплата больше итога чека на {money.format(paid - total)} сом.</div>}{underpaidRetail && <div className="form-error">Для розничного покупателя нужна полная оплата. Не хватает {money.format(remainder)} сом.</div>}{canDebt && remainder > 0 && !overpaid && <div className="debt-message">Остаток {money.format(remainder)} сом будет записан выбранному человеку в долг.</div>}{Boolean(error) && <div className="form-error">{validationMessage(error) ?? (error instanceof ApiError ? error.message : String(error))}</div>}<footer><button className="button secondary" onClick={onClose} disabled={pending}>Назад</button><button className="button primary" onClick={() => onPay({ cash, mbank })} disabled={disabled}>{pending ? 'Проводим…' : 'Завершить'}</button></footer></div></Modal>;
 }
 
 function variantWord(count: number) { return count === 1 ? 'размер' : count > 1 && count < 5 ? 'размера' : 'размеров'; }

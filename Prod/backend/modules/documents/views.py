@@ -22,7 +22,7 @@ class TradeDocumentViewSet(viewsets.ReadOnlyModelViewSet):
         kinds = [item for item in self.request.query_params.get("kind", "").split(",") if item]
         if kinds:
             queryset = queryset.filter(kind__in=kinds)
-        for param in ("status", "warehouse", "party"):
+        for param in ("status", "warehouse", "party", "source_document"):
             value = self.request.query_params.get(param)
             if value:
                 queryset = queryset.filter(**{param if param == "status" else f"{param}_id": value})

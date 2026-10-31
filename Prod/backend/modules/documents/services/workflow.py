@@ -7,7 +7,7 @@ from modules.auditlog.services import record_action
 from modules.common.commands import acquire_command, complete_command
 from modules.common.errors import Conflict
 from modules.finance.models import ObligationSide, Payment
-from modules.finance.services import create_obligation, create_payment_locked
+from modules.finance.services import auto_offset, create_obligation, create_payment_locked
 from modules.identity.permissions import require_warehouse
 from modules.parties.models import Party
 from modules.inventory.services import issue_line, issue_supplier_return, receive_customer_return, receive_line, release_order_reservations, reserve_order_line, reverse_inbound_document, reverse_outbound_document
@@ -102,8 +102,19 @@ def _post_locked(document, actor, *, paid_amount=Decimal("0.00"), payment_method
         DocumentKind.CUSTOMER_RETURN: ObligationSide.PAYABLE,
         DocumentKind.SUPPLIER_RETURN: ObligationSide.RECEIVABLE,
     }
+    document_obligation = None
     if document.amount_total > 0 and document.kind in side_by_kind:
-        create_obligation(party=document.party, warehouse=document.warehouse, side=side_by_kind[document.kind], amount=document.amount_total, effective_date=document.effective_date, actor=actor, source_document=document, reason=document.get_kind_display())
+        document_obligation = create_obligation(
+            party=document.party,
+            warehouse=document.warehouse,
+            side=side_by_kind[document.kind],
+            amount=document.amount_total,
+            effective_date=document.effective_date,
+            actor=actor,
+            source_document=document,
+            reason=document.get_kind_display(),
+            apply_automatic_offset=not payment_parts,
+        )
     if document.kind == DocumentKind.SALE:
         for line in lines:
             supply = getattr(line, "neighbor_supply", None)
@@ -134,7 +145,9 @@ def _post_locked(document, actor, *, paid_amount=Decimal("0.00"), payment_method
                 effective_date=document.effective_date,
                 note=f"Оплата по {document.number}",
                 source_document=document,
+                applications=[{"obligation_id": document_obligation.pk, "amount": part["amount"]}],
             )
+        auto_offset(party=document.party, warehouse=document.warehouse)
     document.status = DocumentStatus.POSTED
     document.posted_by = actor
     document.posted_at = timezone.now()
