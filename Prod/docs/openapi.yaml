@@ -249,6 +249,33 @@ paths:
               schema:
                 $ref: '#/components/schemas/Category'
           description: ''
+  /api/v1/catalog/otabek/webhook/:
+    post:
+      operationId: api_v1_catalog_otabek_webhook_create
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OtabekWebhook'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OtabekWebhook'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OtabekWebhook'
+        required: true
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
   /api/v1/catalog/products/:
     get:
       operationId: api_v1_catalog_products_list
@@ -971,6 +998,33 @@ paths:
               schema:
                 $ref: '#/components/schemas/Payment'
           description: ''
+  /api/v1/finance/payments/split/:
+    post:
+      operationId: api_v1_finance_payments_split_create
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Payment'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Payment'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Payment'
+        required: true
+      security:
+      - expiringToken: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+          description: ''
   /api/v1/import/{id}/apply/:
     post:
       operationId: api_v1_import_apply_create
@@ -1519,6 +1573,18 @@ components:
       description: |-
         * `incoming` - Приход
         * `outgoing` - Расход
+    EventEnum:
+      enum:
+      - catalog.changed
+      - product.created
+      - product.deleted
+      - product.updated
+      type: string
+      description: |-
+        * `catalog.changed` - catalog.changed
+        * `product.created` - product.created
+        * `product.deleted` - product.deleted
+        * `product.updated` - product.updated
     ExtraCost:
       type: object
       properties:
@@ -1558,6 +1624,33 @@ components:
         * `cash` - Наличные
         * `mbank` - МБанк
         * `aiyl` - Айыл Банк
+    NeighborSupply:
+      type: object
+      properties:
+        supplier_id:
+          type: integer
+          readOnly: true
+        supplier_name:
+          type: string
+          readOnly: true
+        quantity:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,13}(?:\.\d{0,3})?$
+        unit_price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,14}(?:\.\d{0,2})?$
+        amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,16}(?:\.\d{0,2})?$
+      required:
+      - amount
+      - quantity
+      - supplier_id
+      - supplier_name
+      - unit_price
     Obligation:
       type: object
       properties:
@@ -1634,6 +1727,17 @@ components:
       - source_number
       - warehouse
       - warehouse_name
+    OtabekWebhook:
+      type: object
+      properties:
+        event:
+          $ref: '#/components/schemas/EventEnum'
+        event_id:
+          type: string
+          maxLength: 120
+      required:
+      - event
+      - event_id
     PaginatedAuditRecordList:
       type: object
       required:
@@ -1891,11 +1995,9 @@ components:
           readOnly: true
       required:
       - balance
-      - code
       - created_at
       - id
       - is_system
-      - kind
       - name
       - system_key
       - updated_at
@@ -2416,6 +2518,14 @@ components:
         product_id:
           type: integer
           readOnly: true
+        product_image:
+          type: string
+          format: uri
+          readOnly: true
+        product_external_image_url:
+          type: string
+          format: uri
+          readOnly: true
         source_line_id:
           type: integer
           readOnly: true
@@ -2446,11 +2556,19 @@ components:
           type: string
           format: decimal
           pattern: ^-?\d{0,16}(?:\.\d{0,2})?$
+        neighbor_supply:
+          allOf:
+          - $ref: '#/components/schemas/NeighborSupply'
+          readOnly: true
+          nullable: true
       required:
       - id
       - line_total
+      - neighbor_supply
       - position
+      - product_external_image_url
       - product_id
+      - product_image
       - product_name
       - quantity
       - source_line_id

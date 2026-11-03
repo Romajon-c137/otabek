@@ -23,3 +23,7 @@
 Запуск и эксплуатация: `docs/OPERATIONS.md`. Архитектура и границы модулей:
 `docs/ARCHITECTURE.md`. Карта функций и проверок: `docs/COVERAGE_MATRIX.md`.
 
+Локальная доработка интерфейса с подключением к серверному backend описана в
+`docs/LOCAL_FRONTEND.md`. Безопасное обновление production после merge в `main` —
+в `docs/DEPLOYMENT.md`.
+

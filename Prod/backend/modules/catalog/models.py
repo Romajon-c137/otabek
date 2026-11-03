@@ -62,3 +62,12 @@ class Product(TimeStampedModel):
     def __str__(self):
         return self.name
 
+
+class OtabekWebhookReceipt(models.Model):
+    event_id = models.CharField(max_length=120, unique=True)
+    payload_sha256 = models.CharField(max_length=64)
+    received_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-received_at"]
+

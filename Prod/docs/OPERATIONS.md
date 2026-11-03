@@ -11,7 +11,9 @@
 3. Для HTTPS за reverse proxy задать `DJANGO_SECURE_SSL_REDIRECT=true` и
    `DJANGO_HSTS_SECONDS=31536000` только после проверки TLS.
 4. Для синхронизации внешнего каталога задать `OTABEK_USERNAME` и
-   `OTABEK_PASSWORD`; без них остальные функции работают независимо.
+   `OTABEK_PASSWORD`; без них остальные функции работают независимо. Для
+   событийной синхронизации также задать случайный `OTABEK_WEBHOOK_SECRET`
+   длиной не менее 32 символов.
 5. Запустить:
 
 ```powershell
@@ -72,6 +74,22 @@ npx playwright test
 cd ..
 docker compose config --quiet
 ```
+
+## Webhook каталога Otabek
+
+Источник отправляет `POST /api/v1/catalog/otabek/webhook/` с JSON:
+
+```json
+{"event":"product.created","event_id":"уникальный-id-события"}
+```
+
+Поддерживаются события `catalog.changed`, `product.created`, `product.updated`
+и `product.deleted`. Заголовок `X-Otabek-Timestamp` содержит текущее Unix-время,
+а `X-Otabek-Signature` — `sha256=<hex>`, где `<hex>` является HMAC-SHA256 от
+строки `<timestamp>.<точные байты JSON>` с ключом `OTABEK_WEBHOOK_SECRET`.
+Повторы одного `event_id` не запускают повторную синхронизацию. После успешного
+обновления backend публикует событие в ленту, и открытые кассы перечитывают
+каталог без перезагрузки страницы.
 
 Конкурентный тест списания выполняется только на PostgreSQL и намеренно
 пропускается на SQLite. Перед вводом в эксплуатацию запуск полного набора на

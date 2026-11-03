@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 node_modules/
 frontend/dist/
+frontend/.env.remote
 frontend/test-results/
 frontend/playwright-report/
 *.tsbuildinfo

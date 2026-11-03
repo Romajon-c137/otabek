@@ -70,6 +70,7 @@ export function PosPage({ flow = 'sale' }: { flow?: 'sale' | 'order' }) {
     return [...result.entries()];
   })();
 
+  /* eslint-disable react-hooks/set-state-in-effect -- one-time hydration of editor state from async API data */
   useEffect(() => {
     const document = editingOrder.data;
     if (!editingOrderId || !document || !products.data || !people.data || hydratedOrderId.current === editingOrderId) return;
@@ -91,6 +92,7 @@ export function PosPage({ flow = 'sale' }: { flow?: 'sale' | 'order' }) {
     })));
     hydratedOrderId.current = editingOrderId;
   }, [editingOrder.data, editingOrderId, people.data, products.data]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const sale = useMutation({
     mutationFn: async (amounts: PaymentAmounts) => {
